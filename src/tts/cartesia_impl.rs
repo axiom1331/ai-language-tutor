@@ -83,11 +83,6 @@ struct VoiceConfig<'a> {
 }
 
 #[derive(Serialize)]
-struct ExperimentalControls {
-    speed: f32,
-}
-
-#[derive(Serialize)]
 struct OutputFormat<'a> {
     container: &'a str,
     encoding: &'a str,

@@ -5,7 +5,7 @@ use std::time::Instant;
 use tracing::{error, debug, info, instrument};
 
 use crate::{
-    assistant::{LearningAssistant, LearningResponse, Message, Role},
+    replygen::{ReplyGenerator, GenerationResponse, Message, Role},
     error::AssistantError,
     metrics::AnalysisMetrics,
 };
@@ -78,15 +78,14 @@ struct ModelOutput {
 
 // ── Implementation ───────────────────────────────────────────────────────────
 
-/// Language-learning assistant backed by Amazon Bedrock (Claude on Bedrock).
-pub struct BedrockLearningAssistant {
+/// Language-learning reply generator backed by Amazon Bedrock (Claude on Bedrock).
+pub struct BedrockReplyGenerator {
     client: Client,
     model_id: String,
 }
 
-impl BedrockLearningAssistant {
-    /// Create a new assistant using the supplied Bedrock client and model ID.
-    /// ```
+impl BedrockReplyGenerator {
+    /// Create a new reply generator using the supplied Bedrock client and model ID.
     pub fn new(client: Client, model_id: impl Into<String>) -> Self {
         Self {
             client,
@@ -110,17 +109,17 @@ impl BedrockLearningAssistant {
 }
 
 #[async_trait]
-impl LearningAssistant for BedrockLearningAssistant {
+impl ReplyGenerator for BedrockReplyGenerator {
     #[instrument(skip(self, history), fields(model_id = %self.model_id, target_language, message_count = history.len()))]
-    async fn analyze(
+    async fn generate(
         &self,
         target_language: &str,
         history: &[Message],
-    ) -> Result<LearningResponse, AssistantError> {
+    ) -> Result<GenerationResponse, AssistantError> {
         let start_time = Instant::now();
         let mut metrics = AnalysisMetrics::new(target_language.to_string(), history.len());
 
-        info!("Starting analysis request");
+        info!("Starting generation request");
         let messages: Vec<BedrockMessage<'_>> = history
             .iter()
             .map(|m| BedrockMessage {
@@ -217,10 +216,10 @@ impl LearningAssistant for BedrockLearningAssistant {
             has_tip = output.tip.is_some(),
             total_duration_ms = metrics.total_duration.as_millis(),
             api_duration_ms = metrics.api_call_duration.as_millis(),
-            "Successfully parsed learning response"
+            "Successfully parsed generation response"
         );
 
-        Ok(LearningResponse {
+        Ok(GenerationResponse {
             reply: output.reply,
             original_language_translated_reply: output.original_language_translated_reply,
             corrections: output.corrections,

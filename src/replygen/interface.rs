@@ -16,9 +16,9 @@ pub enum Role {
     Assistant,
 }
 
-/// The response produced by the assistant after analyzing user input.
+/// The response produced by the reply generator after analyzing user input.
 #[derive(Debug)]
-pub struct LearningResponse {
+pub struct GenerationResponse {
     /// The assistant's reply in the target language and/or explanation.
     pub reply: String,
     /// The assistant's reply in the original language of the user.
@@ -31,17 +31,17 @@ pub struct LearningResponse {
     pub metrics: AnalysisMetrics,
 }
 
-/// Core interface for a language-learning AI assistant.
+/// Core interface for a language-learning reply generator.
 ///
 /// Implementations are responsible for sending conversation history to a
-/// backing model and returning a structured [`LearningResponse`].
+/// backing model and returning a structured [`GenerationResponse`].
 #[async_trait]
-pub trait LearningAssistant: Send + Sync {
+pub trait ReplyGenerator: Send + Sync {
     /// Analyze the latest user message given the full conversation history
     /// and return a pedagogically enriched response.
-    async fn analyze(
+    async fn generate(
         &self,
         target_language: &str,
         history: &[Message],
-    ) -> Result<LearningResponse, AssistantError>;
+    ) -> Result<GenerationResponse, AssistantError>;
 }

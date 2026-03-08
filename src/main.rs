@@ -1,23 +1,19 @@
-mod assistant;
-mod bedrock;
-mod cartesia;
 mod error;
 mod metrics;
+mod replygen;
 mod tts;
+mod tutor;
 
-use aws_config::BehaviorVersion;
-use assistant::{LearningAssistant, Message, Role};
-use bedrock::BedrockLearningAssistant;
-use cartesia::{CartesiaTtsProvider, CartesiaConfig};
+use aws_config::{BehaviorVersion, Region};
 use dotenv::dotenv;
-use metrics::SessionMetrics;
+use replygen::{BedrockReplyGenerator, Message, Role};
 use std::env;
 use std::fs;
 use std::path::Path;
-use std::time::Instant;
-use tracing::{info, error};
+use tracing::{error, info};
 use tracing_subscriber;
-use tts::TtsProvider;
+use tts::{CartesiaConfig, CartesiaTtsProvider};
+use tutor::LanguageTutor;
 
 #[tokio::main]
 async fn main() {
@@ -30,28 +26,37 @@ async fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .init();
-    info!("Initializing AWS config for region: eu-central-1");
-    let config = aws_config::defaults(BehaviorVersion::latest()).region("eu-central-1").load().await;
+
+    let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set");
+    info!("Initializing AWS config for region: {}", aws_region);
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(aws_region))
+        .load()
+        .await;
     let client = aws_sdk_bedrockruntime::Client::new(&config);
 
-    info!("Creating Bedrock assistant with model: eu.amazon.nova-lite-v1:0");
-    let assistant = BedrockLearningAssistant::new(
-        client,
-        "eu.amazon.nova-lite-v1:0",
-    );
+    info!("Creating Bedrock reply generator with model: eu.amazon.nova-lite-v1:0");
+    let reply_generator = BedrockReplyGenerator::new(client, "eu.amazon.nova-lite-v1:0");
 
     info!("Setting up Cartesia TTS provider");
     let tts_config = CartesiaConfig {
         api_key: env::var("CARTESIA_API_KEY").expect("CARTESIA_API_KEY not set"),
-        voice_id: env::var("CARTESIA_VOICE_ID").unwrap_or_else(|_| "default-voice".to_string()),
-        model_id: env::var("CARTESIA_MODEL_ID").unwrap_or_else(|_| "sonic-multilingual".to_string()),
+        voice_id: env::var("CARTESIA_VOICE_ID")
+            .unwrap_or_else(|_| "default-voice".to_string()),
+        model_id: env::var("CARTESIA_MODEL_ID")
+            .unwrap_or_else(|_| "sonic-multilingual".to_string()),
         speed: env::var("CARTESIA_SPEED")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(1.0),
-        output_format: env::var("CARTESIA_OUTPUT_FORMAT").unwrap_or_else(|_| "wav".to_string()),
+        output_format: env::var("CARTESIA_OUTPUT_FORMAT")
+            .unwrap_or_else(|_| "wav".to_string()),
     };
     let tts_provider = CartesiaTtsProvider::new(tts_config);
+
+    // Create the language tutor
+    info!("Creating language tutor");
+    let tutor = LanguageTutor::new(reply_generator, tts_provider);
 
     // Create output directory
     let output_dir = "tts_output";
@@ -62,19 +67,21 @@ async fn main() {
 
     let history = vec![Message {
         role: Role::User,
-        content: "Hola! Tu eres muy interesante. Yo estoy cansado hoy.".to_string(),
+        content: "Hola! Como estas hoy?".to_string(),
     }];
 
     let target_language = "es";
-    let session_start = Instant::now();
 
-    info!("Analyzing user message for language: {}", target_language);
-    match assistant.analyze(target_language, &history).await {
+    info!("Processing user message");
+    match tutor.process(target_language, &history).await {
         Ok(response) => {
-            info!("Successfully received response from assistant");
-            println!("\n=== Assistant Response ===");
+            info!("Successfully processed user message");
+            println!("\n=== Tutor Response ===");
             println!("Reply:       {}", response.reply);
-            println!("Original Language Reply: {}", response.original_language_translated_reply);
+            println!(
+                "Original Language Reply: {}",
+                response.original_language_translated_reply
+            );
 
             if let Some(c) = &response.corrections {
                 println!("Corrections: {c}");
@@ -83,61 +90,30 @@ async fn main() {
                 println!("Tip:         {t}");
             }
 
-            let analysis_metrics = response.metrics;
-            let has_corrections = response.corrections.is_some();
-            let has_tip = response.tip.is_some();
+            // Generate filename with timestamp
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let filename = format!("{}/reply_{}.wav", output_dir, timestamp);
 
-            // Synthesize speech from the reply
-            info!("Synthesizing speech for reply");
-            match tts_provider.synthesize(&response.reply, target_language).await {
-                Ok(tts_result) => {
-                    // Generate filename with timestamp
-                    let timestamp = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    let filename = format!("{}/reply_{}.wav", output_dir, timestamp);
-
-                    info!("Saving audio to: {}", filename);
-                    match fs::write(&filename, &tts_result.audio_bytes) {
-                        Ok(_) => {
-                            println!("Audio saved to: {}", filename);
-                            info!("Audio file saved successfully");
-                        }
-                        Err(e) => {
-                            error!("Failed to save audio file: {}", e);
-                            eprintln!("Failed to save audio: {}", e);
-                        }
-                    }
-
-                    // Display session metrics
-                    let session_metrics = SessionMetrics {
-                        analysis: analysis_metrics,
-                        tts: Some(tts_result.metrics),
-                        total_duration: session_start.elapsed(),
-                        has_corrections,
-                        has_tip,
-                    };
-                    session_metrics.display();
+            info!("Saving audio to: {}", filename);
+            match fs::write(&filename, &response.audio_bytes) {
+                Ok(_) => {
+                    println!("Audio saved to: {}", filename);
+                    info!("Audio file saved successfully");
                 }
                 Err(e) => {
-                    error!("Failed to synthesize speech: {}", e);
-                    eprintln!("TTS Error: {}", e);
-
-                    // Display metrics even if TTS failed
-                    let session_metrics = SessionMetrics {
-                        analysis: analysis_metrics,
-                        tts: None,
-                        total_duration: session_start.elapsed(),
-                        has_corrections,
-                        has_tip,
-                    };
-                    session_metrics.display();
+                    error!("Failed to save audio file: {}", e);
+                    eprintln!("Failed to save audio: {}", e);
                 }
             }
+
+            // Display session metrics
+            response.metrics.display();
         }
         Err(e) => {
-            error!("Failed to analyze message: {}", e);
+            error!("Failed to process message: {}", e);
             eprintln!("Error: {e}");
         }
     }
