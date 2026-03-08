@@ -94,17 +94,8 @@ impl BedrockReplyGenerator {
     }
 
     fn build_system_prompt(target_language: &str) -> String {
-        format!(
-            "You are an expert {target_language} language tutor. \
-             Respond ONLY with a JSON object — no prose outside the object. \
-             The JSON must have these fields:\n\
-             - \"reply\": your response to the user in {target_language} \n\
-             - \"original_language_translated_reply\": your response to the user translated in his original language (en-US) \n\
-             - \"corrections\": a string describing any grammatical or vocabulary \
-               errors in the user's last message, or null if there are none\n\
-             - \"tip\": one short, relevant grammar or vocabulary tip, or null\n\
-             Keep replies encouraging and concise."
-        )
+        let template = include_str!("prompts/system_prompt.txt");
+        template.replace("{target_language}", target_language)
     }
 }
 

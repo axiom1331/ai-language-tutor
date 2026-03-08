@@ -41,6 +41,7 @@ async fn main() {
     info!("Setting up Cartesia TTS provider");
     let tts_config = CartesiaConfig {
         api_key: env::var("CARTESIA_API_KEY").expect("CARTESIA_API_KEY not set"),
+        version: env::var("CARTESIA_VERSION").expect("CARTESIA_VERSION not set"),
         voice_id: env::var("CARTESIA_VOICE_ID")
             .unwrap_or_else(|_| "default-voice".to_string()),
         model_id: env::var("CARTESIA_MODEL_ID")

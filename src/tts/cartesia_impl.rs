@@ -11,6 +11,8 @@ use crate::{error::TtsError, metrics::TtsMetrics, tts::{TtsProvider, TtsResult}}
 pub struct CartesiaConfig {
     /// API key for authentication
     pub api_key: String,
+    /// API version
+    pub version: String,
     /// Voice ID to use for synthesis
     pub voice_id: String,
     /// Model ID (e.g., "sonic-english", "sonic-multilingual")
@@ -25,6 +27,7 @@ impl Default for CartesiaConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
+            version: "2025-04-16".to_string(),
             voice_id: String::new(),
             model_id: "sonic-multilingual".to_string(),
             speed: 1.0,
@@ -140,7 +143,7 @@ impl TtsProvider for CartesiaTtsProvider {
             .client
             .post(&self.base_url)
             .header("X-API-Key", &self.config.api_key)
-            .header("Cartesia-Version", "2024-06-10")
+            .header("Cartesia-Version", &self.config.version)
             .json(&request_body)
             .send()
             .await
