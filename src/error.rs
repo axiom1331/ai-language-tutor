@@ -32,3 +32,27 @@ pub enum TtsError {
     #[error("No audio data received")]
     NoAudioData,
 }
+
+#[derive(Debug, Error)]
+pub enum SttError {
+    #[error("WebSocket error: {0}")]
+    WebSocketError(String),
+
+    #[error("Failed to serialize request: {0}")]
+    Serialization(#[from] serde_json::Error),
+
+    #[error("STT API error: {0}")]
+    ApiError(String),
+
+    #[error("Invalid response format")]
+    InvalidResponse,
+
+    #[error("No transcription received")]
+    NoTranscription,
+
+    #[error("Connection error: {0}")]
+    ConnectionError(String),
+
+    #[error("Audio encoding error: {0}")]
+    AudioEncodingError(String),
+}

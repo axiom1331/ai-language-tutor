@@ -63,6 +63,33 @@ impl TtsMetrics {
     }
 }
 
+/// Metrics for STT transcription operations.
+#[derive(Debug, Clone)]
+pub struct SttMetrics {
+    /// Total time from request to receiving transcription
+    pub total_duration: Duration,
+    /// Time spent on network/API call
+    pub api_call_duration: Duration,
+    /// Size of input audio in bytes
+    pub audio_size_bytes: usize,
+    /// Length of transcribed text in characters
+    pub transcript_length: usize,
+    /// Language of the audio
+    pub language: String,
+}
+
+impl SttMetrics {
+    pub fn new(audio_size_bytes: usize, language: String) -> Self {
+        Self {
+            total_duration: Duration::default(),
+            api_call_duration: Duration::default(),
+            audio_size_bytes,
+            transcript_length: 0,
+            language,
+        }
+    }
+}
+
 /// Aggregated metrics for a complete learning interaction.
 #[derive(Debug, Clone)]
 pub struct SessionMetrics {

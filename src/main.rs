@@ -1,6 +1,7 @@
 mod error;
 mod metrics;
 mod replygen;
+mod stt;
 mod tts;
 mod tutor;
 
