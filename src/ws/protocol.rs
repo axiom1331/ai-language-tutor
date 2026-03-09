@@ -44,7 +44,7 @@ pub enum MessageRole {
 }
 
 /// Messages sent from the server to the client
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
     /// Text response with transcription and generated reply
@@ -58,7 +58,7 @@ pub enum ServerMessage {
 }
 
 /// Text-based response containing transcription and reply
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct TextResponse {
     /// Original request ID
     pub request_id: Uuid,
@@ -82,7 +82,7 @@ pub struct TextResponse {
 }
 
 /// Audio response containing TTS output
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct AudioResponse {
     /// Original request ID
     pub request_id: Uuid,
@@ -96,7 +96,7 @@ pub struct AudioResponse {
 }
 
 /// Error response
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct ErrorResponse {
     /// Original request ID if available
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -110,7 +110,7 @@ pub struct ErrorResponse {
 }
 
 /// Error codes for different failure scenarios
-#[derive(Debug, Serialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
 pub enum ErrorCode {
     /// Invalid message format
