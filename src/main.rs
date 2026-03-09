@@ -4,17 +4,18 @@ mod replygen;
 mod stt;
 mod tts;
 mod tutor;
+mod ws;
 
 use aws_config::{BehaviorVersion, Region};
 use dotenv::dotenv;
-use replygen::{BedrockReplyGenerator, Message, Role};
+use replygen::BedrockReplyGenerator;
+use stt::{CartesiaConfig as SttCartesiaConfig, CartesiaSttProvider};
 use std::env;
-use std::fs;
-use std::path::Path;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber;
-use tts::{CartesiaConfig, CartesiaTtsProvider};
+use tts::{CartesiaConfig as TtsCartesiaConfig, CartesiaTtsProvider};
 use tutor::LanguageTutor;
+use ws::create_app;
 
 #[tokio::main]
 async fn main() {
@@ -28,19 +29,45 @@ async fn main() {
         )
         .init();
 
+    // Initialize AWS Bedrock client
     let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set");
     info!("Initializing AWS config for region: {}", aws_region);
     let config = aws_config::defaults(BehaviorVersion::latest())
         .region(Region::new(aws_region))
         .load()
         .await;
-    let client = aws_sdk_bedrockruntime::Client::new(&config);
+    let bedrock_client = aws_sdk_bedrockruntime::Client::new(&config);
 
+    // Create Bedrock reply generator
     info!("Creating Bedrock reply generator with model: eu.amazon.nova-lite-v1:0");
-    let reply_generator = BedrockReplyGenerator::new(client, "eu.amazon.nova-lite-v1:0");
+    let reply_generator = BedrockReplyGenerator::new(bedrock_client, "eu.amazon.nova-lite-v1:0");
 
+    // Create Cartesia STT provider
+    info!("Setting up Cartesia STT provider");
+    let stt_config = SttCartesiaConfig {
+        api_key: env::var("CARTESIA_API_KEY").expect("CARTESIA_API_KEY not set"),
+        model_id: env::var("CARTESIA_STT_MODEL_ID")
+            .unwrap_or_else(|_| "ink-whisper".to_string()),
+        language: env::var("DEFAULT_LANGUAGE").unwrap_or_else(|_| "en".to_string()),
+        encoding: env::var("AUDIO_ENCODING").unwrap_or_else(|_| "pcm_s16le".to_string()),
+        sample_rate: env::var("SAMPLE_RATE")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(16000),
+        min_volume: env::var("MIN_VOLUME")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.1),
+        max_silence_duration_secs: env::var("MAX_SILENCE_DURATION")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0.5),
+    };
+    let stt_provider = CartesiaSttProvider::new(stt_config);
+
+    // Create Cartesia TTS provider
     info!("Setting up Cartesia TTS provider");
-    let tts_config = CartesiaConfig {
+    let tts_config = TtsCartesiaConfig {
         api_key: env::var("CARTESIA_API_KEY").expect("CARTESIA_API_KEY not set"),
         version: env::var("CARTESIA_VERSION").expect("CARTESIA_VERSION not set"),
         voice_id: env::var("CARTESIA_VOICE_ID")
@@ -60,63 +87,23 @@ async fn main() {
     info!("Creating language tutor");
     let tutor = LanguageTutor::new(reply_generator, tts_provider);
 
-    // Create output directory
-    let output_dir = "tts_output";
-    if !Path::new(output_dir).exists() {
-        info!("Creating output directory: {}", output_dir);
-        fs::create_dir_all(output_dir).expect("Failed to create output directory");
-    }
+    // Create the WebSocket application
+    info!("Creating WebSocket server");
+    let app = create_app(stt_provider, tutor);
 
-    let history = vec![Message {
-        role: Role::User,
-        content: "Hola! Como estas hoy?".to_string(),
-    }];
+    // Start the server
+    let addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
+    info!("Starting WebSocket server on {}", addr);
 
-    let target_language = "es";
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .expect("Failed to bind to address");
 
-    info!("Processing user message");
-    match tutor.process(target_language, &history).await {
-        Ok(response) => {
-            info!("Successfully processed user message");
-            println!("\n=== Tutor Response ===");
-            println!("Reply:       {}", response.reply);
-            println!(
-                "Original Language Reply: {}",
-                response.original_language_translated_reply
-            );
+    info!("WebSocket server listening on {}", addr);
+    info!("WebSocket endpoint: ws://{}/ws", addr);
+    info!("Health check endpoint: http://{}/health", addr);
 
-            if let Some(c) = &response.corrections {
-                println!("Corrections: {c}");
-            }
-            if let Some(t) = &response.tip {
-                println!("Tip:         {t}");
-            }
-
-            // Generate filename with timestamp
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            let filename = format!("{}/reply_{}.wav", output_dir, timestamp);
-
-            info!("Saving audio to: {}", filename);
-            match fs::write(&filename, &response.audio_bytes) {
-                Ok(_) => {
-                    println!("Audio saved to: {}", filename);
-                    info!("Audio file saved successfully");
-                }
-                Err(e) => {
-                    error!("Failed to save audio file: {}", e);
-                    eprintln!("Failed to save audio: {}", e);
-                }
-            }
-
-            // Display session metrics
-            response.metrics.display();
-        }
-        Err(e) => {
-            error!("Failed to process message: {}", e);
-            eprintln!("Error: {e}");
-        }
-    }
+    axum::serve(listener, app)
+        .await
+        .expect("Failed to start server");
 }

@@ -6,3 +6,4 @@ pub mod replygen;
 pub mod stt;
 pub mod tts;
 pub mod tutor;
+pub mod ws;
