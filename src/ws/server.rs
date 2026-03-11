@@ -1,7 +1,7 @@
+use crate::pipeline::Pipeline;
 use crate::replygen::ReplyGenerator;
 use crate::stt::SttProvider;
 use crate::tts::TtsProvider;
-use crate::tutor::LanguageTutor;
 use crate::ws::handler::{handle_websocket, WsState};
 use axum::{
     extract::{State, WebSocketUpgrade},
@@ -9,25 +9,18 @@ use axum::{
     routing::get,
     Router,
 };
-use std::sync::Arc;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 /// Create the Axum application with WebSocket routes
-pub fn create_app<S, R, T>(
-    stt_provider: S,
-    tutor: LanguageTutor<R, T>,
-) -> Router
+pub fn create_app<S, R, T>(pipeline: Pipeline) -> Router
 where
     S: SttProvider + 'static,
     R: ReplyGenerator + 'static,
     T: TtsProvider + 'static,
 {
-    let state = WsState {
-        stt_provider: Arc::new(stt_provider),
-        tutor: Arc::new(tutor),
-    };
+    let state = WsState { pipeline };
 
     // Configure CORS to allow WebSocket connections from any origin
     let cors = CorsLayer::new()
@@ -41,7 +34,7 @@ where
         .on_response(DefaultOnResponse::new().level(Level::INFO));
 
     Router::new()
-        .route("/ws", get(ws_handler::<S, R, T>))
+        .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
         .layer(cors)
         .layer(trace)
@@ -49,15 +42,7 @@ where
 }
 
 /// WebSocket upgrade handler
-async fn ws_handler<S, R, T>(
-    ws: WebSocketUpgrade,
-    State(state): State<WsState<S, R, T>>,
-) -> impl IntoResponse
-where
-    S: SttProvider + 'static,
-    R: ReplyGenerator + 'static,
-    T: TtsProvider + 'static,
-{
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_websocket(socket, state))
 }
 
@@ -77,6 +62,7 @@ mod tests {
     use async_trait::async_trait;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use std::sync::Arc;
     use std::time::Duration;
     use tower::ServiceExt;
 
@@ -159,9 +145,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_health_endpoint() {
-        let stt = MockSttProvider;
-        let tutor = LanguageTutor::new(MockReplyGenerator, MockTtsProvider);
-        let app = create_app(stt, tutor);
+        let stt = Arc::new(MockSttProvider);
+        let reply_gen = Arc::new(MockReplyGenerator);
+        let tts = Arc::new(MockTtsProvider);
+        let pipeline = crate::pipeline::Pipeline::new(stt, reply_gen, tts);
+        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(pipeline);
 
         let request = Request::builder()
             .uri("/health")
@@ -174,9 +162,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_ws_endpoint_exists() {
-        let stt = MockSttProvider;
-        let tutor = LanguageTutor::new(MockReplyGenerator, MockTtsProvider);
-        let app = create_app(stt, tutor);
+        let stt = Arc::new(MockSttProvider);
+        let reply_gen = Arc::new(MockReplyGenerator);
+        let tts = Arc::new(MockTtsProvider);
+        let pipeline = crate::pipeline::Pipeline::new(stt, reply_gen, tts);
+        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(pipeline);
 
         // Test that the /ws route exists (without proper headers it will fail, but not 404)
         let request = Request::builder()

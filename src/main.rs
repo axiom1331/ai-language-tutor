@@ -1,20 +1,21 @@
 mod error;
 mod metrics;
+mod pipeline;
 mod replygen;
 mod stt;
 mod tts;
-mod tutor;
 mod ws;
 
 use aws_config::{BehaviorVersion, Region};
 use dotenv::dotenv;
+use pipeline::Pipeline;
 use replygen::BedrockReplyGenerator;
 use stt::{CartesiaConfig as SttCartesiaConfig, CartesiaSttProvider};
 use std::env;
+use std::sync::Arc;
 use tracing::info;
 use tracing_subscriber;
 use tts::{CartesiaConfig as TtsCartesiaConfig, CartesiaTtsProvider};
-use tutor::LanguageTutor;
 use ws::create_app;
 
 #[tokio::main]
@@ -81,15 +82,19 @@ async fn main() {
         output_format: env::var("CARTESIA_OUTPUT_FORMAT")
             .unwrap_or_else(|_| "wav".to_string()),
     };
-    let tts_provider = CartesiaTtsProvider::new(tts_config);
+    let tts_provider = Arc::new(CartesiaTtsProvider::new(tts_config));
 
-    // Create the language tutor
-    info!("Creating language tutor");
-    let tutor = LanguageTutor::new(reply_generator, tts_provider);
+    // Wrap providers in Arc for sharing across threads
+    let stt_provider = Arc::new(stt_provider);
+    let reply_generator = Arc::new(reply_generator);
+
+    // Create and start the processing pipeline with worker threads
+    info!("Initializing parallel processing pipeline (STT -> Reply -> TTS)");
+    let pipeline = Pipeline::new(stt_provider, reply_generator, tts_provider);
 
     // Create the WebSocket application
     info!("Creating WebSocket server");
-    let app = create_app(stt_provider, tutor);
+    let app = create_app::<CartesiaSttProvider, BedrockReplyGenerator, CartesiaTtsProvider>(pipeline);
 
     // Start the server
     let addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
