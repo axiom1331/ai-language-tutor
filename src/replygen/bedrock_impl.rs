@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::{primitives::Blob, Client};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use std::time::Instant;
 use tracing::{error, debug, info, instrument};
 
@@ -9,6 +10,8 @@ use crate::{
     error::AssistantError,
     metrics::AnalysisMetrics,
 };
+use super::intent::{Intent};
+use super::intent_classifier::{IntentClassifier, BedrockIntentClassifier};
 
 #[derive(Serialize)]
 struct BedrockRequest<'a> {
@@ -78,23 +81,37 @@ struct ModelOutput {
 
 // ── Implementation ───────────────────────────────────────────────────────────
 
-/// Language-learning reply generator backed by Amazon Bedrock (Claude on Bedrock).
+/// Language-learning reply generator backed by Amazon Bedrock.
+/// Uses a two-stage approach:
+/// 1. Fast intent classification with a lightweight model (nova-micro)
+/// 2. Intent-specific response generation with nova-lite
 pub struct BedrockReplyGenerator {
     client: Client,
     model_id: String,
+    intent_classifier: Arc<dyn IntentClassifier>,
 }
 
 impl BedrockReplyGenerator {
-    /// Create a new reply generator using the supplied Bedrock client and model ID.
+    /// Create a new reply generator using the supplied Bedrock client.
+    /// The model_id parameter specifies the model to use for response generation (typically nova-lite).
     pub fn new(client: Client, model_id: impl Into<String>) -> Self {
+        let intent_classifier = Arc::new(BedrockIntentClassifier::new(client.clone()));
+
         Self {
             client,
             model_id: model_id.into(),
+            intent_classifier,
         }
     }
 
-    fn build_system_prompt(target_language: &str) -> String {
-        let template = include_str!("prompts/system_prompt.txt");
+    /// Build the appropriate system prompt based on the detected intent.
+    fn build_system_prompt(target_language: &str, intent: Intent) -> String {
+        let template = match intent {
+            Intent::Conversation => include_str!("prompts/conversation_prompt.txt"),
+            Intent::GrammarQuestion => include_str!("prompts/grammar_question_prompt.txt"),
+            Intent::ConceptExplanation => include_str!("prompts/concept_explanation_prompt.txt"),
+            Intent::TranslationRequest => include_str!("prompts/translation_request_prompt.txt"),
+        };
         template.replace("{target_language}", target_language)
     }
 }
@@ -110,7 +127,13 @@ impl ReplyGenerator for BedrockReplyGenerator {
         let start_time = Instant::now();
         let mut metrics = AnalysisMetrics::new(target_language.to_string(), history.len());
 
-        info!("Starting generation request");
+        // Step 1: Classify intent using lightweight model
+        info!("Starting intent classification");
+        let intent = self.intent_classifier.classify(history).await?;
+        info!(intent = %intent.as_str(), "Intent classified");
+
+        // Step 2: Generate response using intent-specific prompt
+        info!("Starting generation request with intent-specific prompt");
         let messages: Vec<BedrockMessage<'_>> = history
             .iter()
             .map(|m| BedrockMessage {
@@ -126,7 +149,7 @@ impl ReplyGenerator for BedrockReplyGenerator {
 
         let request_body = BedrockRequest {
             system: vec![SystemMessage {
-                text: Self::build_system_prompt(target_language),
+                text: Self::build_system_prompt(target_language, intent),
             }],
             messages,
             inference_config: InferenceConfig {
