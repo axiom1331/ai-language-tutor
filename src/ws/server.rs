@@ -1,14 +1,17 @@
+use crate::auth::{create_jwt, verify_credentials, verify_jwt};
 use crate::pipeline::Pipeline;
 use crate::replygen::ReplyGenerator;
 use crate::stt::SttProvider;
 use crate::tts::TtsProvider;
 use crate::ws::handler::{handle_websocket, WsState};
 use axum::{
-    extract::{State, WebSocketUpgrade},
+    extract::{Query, State, WebSocketUpgrade},
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
-    Router,
+    routing::{get, post},
+    Json, Router,
 };
+use serde::{Deserialize, Serialize};
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
@@ -36,19 +39,77 @@ where
     Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
+        .route("/api/login", post(login_handler))
         .layer(cors)
         .layer(trace)
         .with_state(state)
 }
 
-/// WebSocket upgrade handler
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_websocket(socket, state))
+#[derive(Debug, Deserialize)]
+struct WsQuery {
+    token: String,
+}
+
+/// WebSocket upgrade handler with JWT verification
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    State(state): State<WsState>,
+    Query(query): Query<WsQuery>,
+) -> Result<impl IntoResponse, (StatusCode, String)> {
+    // Verify JWT token
+    verify_jwt(&query.token).map_err(|e| {
+        (StatusCode::UNAUTHORIZED, format!("Authentication failed: {}", e))
+    })?;
+
+    Ok(ws.on_upgrade(move |socket| handle_websocket(socket, state)))
 }
 
 /// Health check endpoint
 async fn health_handler() -> impl IntoResponse {
     "OK"
+}
+
+#[derive(Debug, Deserialize)]
+struct LoginRequest {
+    username: String,
+    password: String,
+}
+
+#[derive(Debug, Serialize)]
+struct LoginResponse {
+    token: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ErrorResponse {
+    error: String,
+}
+
+/// Login endpoint
+async fn login_handler(
+    Json(credentials): Json<LoginRequest>,
+) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify credentials
+    verify_credentials(&credentials.username, &credentials.password).map_err(|e| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    // Create JWT token
+    let token = create_jwt(&credentials.username).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                error: e.to_string(),
+            }),
+        )
+    })?;
+
+    Ok(Json(LoginResponse { token }))
 }
 
 #[cfg(test)]
