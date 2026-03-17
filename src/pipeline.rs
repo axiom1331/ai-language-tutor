@@ -52,6 +52,10 @@ pub struct TtsRequest {
 pub enum PipelineResponse {
     Text(TextResponse),
     Audio(AudioResponse),
+    Transcription {
+        request_id: Uuid,
+        transcription: String,
+    },
     Error {
         request_id: Uuid,
         message: String,
@@ -84,6 +88,12 @@ pub async fn stt_worker<S>(
                     request.audio_bytes.len(),
                     stt_result.text
                 );
+
+                // Send transcription back to WebSocket for saving
+                let _ = request.response_tx.send(PipelineResponse::Transcription {
+                    request_id: request.request_id,
+                    transcription: stt_result.text.clone(),
+                });
 
                 // Forward to Reply worker
                 let reply_request = ReplyRequest {

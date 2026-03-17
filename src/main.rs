@@ -1,4 +1,5 @@
 mod auth;
+mod db;
 mod error;
 mod metrics;
 mod pipeline;
@@ -8,6 +9,8 @@ mod tts;
 mod ws;
 
 use aws_config::{BehaviorVersion, Region};
+use db::pool::{create_pool, run_migrations};
+use db::ConversationRepository;
 use dotenv::dotenv;
 use pipeline::Pipeline;
 use replygen::BedrockReplyGenerator;
@@ -30,6 +33,20 @@ async fn main() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
         )
         .init();
+
+    // Initialize database connection pool
+    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL not set");
+    let db_pool = create_pool(&database_url)
+        .await
+        .expect("Failed to create database pool");
+
+    // Run migrations
+    run_migrations(&db_pool)
+        .await
+        .expect("Failed to run database migrations");
+
+    // Create conversation repository
+    let conversation_repo = Arc::new(ConversationRepository::new(db_pool));
 
     // Initialize AWS Bedrock client
     let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set");
@@ -95,7 +112,10 @@ async fn main() {
 
     // Create the WebSocket application
     info!("Creating WebSocket server");
-    let app = create_app::<CartesiaSttProvider, BedrockReplyGenerator, CartesiaTtsProvider>(pipeline);
+    let app = create_app::<CartesiaSttProvider, BedrockReplyGenerator, CartesiaTtsProvider>(
+        pipeline,
+        conversation_repo,
+    );
 
     // Start the server
     let addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());

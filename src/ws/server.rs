@@ -1,9 +1,11 @@
 use crate::auth::{create_jwt, verify_credentials, verify_jwt};
+use crate::db::ConversationRepository;
 use crate::pipeline::Pipeline;
 use crate::replygen::ReplyGenerator;
 use crate::stt::SttProvider;
 use crate::tts::TtsProvider;
 use crate::ws::handler::{handle_websocket, WsState};
+use std::sync::Arc;
 use axum::{
     extract::{Query, State, WebSocketUpgrade},
     http::StatusCode,
@@ -17,13 +19,19 @@ use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
 use tracing::Level;
 
 /// Create the Axum application with WebSocket routes
-pub fn create_app<S, R, T>(pipeline: Pipeline) -> Router
+pub fn create_app<S, R, T>(
+    pipeline: Pipeline,
+    conversation_repo: Arc<ConversationRepository>,
+) -> Router
 where
     S: SttProvider + 'static,
     R: ReplyGenerator + 'static,
     T: TtsProvider + 'static,
 {
-    let state = WsState { pipeline };
+    let state = WsState {
+        pipeline,
+        conversation_repo,
+    };
 
     // Configure CORS to allow WebSocket connections from any origin
     let cors = CorsLayer::new()
@@ -205,12 +213,23 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires database connection
     async fn test_health_endpoint() {
         let stt = Arc::new(MockSttProvider);
         let reply_gen = Arc::new(MockReplyGenerator);
         let tts = Arc::new(MockTtsProvider);
         let pipeline = crate::pipeline::Pipeline::new(stt, reply_gen, tts);
-        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(pipeline);
+
+        // Create a mock database pool for testing
+        let db_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/test".to_string());
+        let db_pool = crate::db::pool::create_pool(&db_url).await.unwrap();
+        let conversation_repo = Arc::new(crate::db::ConversationRepository::new(db_pool));
+
+        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(
+            pipeline,
+            conversation_repo,
+        );
 
         let request = Request::builder()
             .uri("/health")
@@ -222,12 +241,23 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore] // Requires database connection
     async fn test_ws_endpoint_exists() {
         let stt = Arc::new(MockSttProvider);
         let reply_gen = Arc::new(MockReplyGenerator);
         let tts = Arc::new(MockTtsProvider);
         let pipeline = crate::pipeline::Pipeline::new(stt, reply_gen, tts);
-        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(pipeline);
+
+        // Create a mock database pool for testing
+        let db_url = std::env::var("DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/test".to_string());
+        let db_pool = crate::db::pool::create_pool(&db_url).await.unwrap();
+        let conversation_repo = Arc::new(crate::db::ConversationRepository::new(db_pool));
+
+        let app = create_app::<MockSttProvider, MockReplyGenerator, MockTtsProvider>(
+            pipeline,
+            conversation_repo,
+        );
 
         // Test that the /ws route exists (without proper headers it will fail, but not 404)
         let request = Request::builder()

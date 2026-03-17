@@ -1,19 +1,24 @@
+use crate::db::{ConversationRepository, CreateMessage, MessageType};
 use crate::pipeline::{HistoryMessage, Pipeline, PipelineResponse, SttRequest};
 use crate::ws::protocol::{ClientMessage, ErrorCode, ErrorResponse, ServerMessage};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt};
+use sqlx::types::Uuid;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 /// Shared state for WebSocket handlers
 pub struct WsState {
     pub pipeline: Pipeline,
+    pub conversation_repo: Arc<ConversationRepository>,
 }
 
 impl Clone for WsState {
     fn clone(&self) -> Self {
         Self {
             pipeline: self.pipeline.clone(),
+            conversation_repo: self.conversation_repo.clone(),
         }
     }
 }
@@ -25,8 +30,26 @@ pub async fn handle_websocket(socket: WebSocket, state: WsState) {
 
     info!("WebSocket client connected: {}", client_id);
 
+    // Create a new conversation for this WebSocket session
+    let conversation_id = match state.conversation_repo.create_conversation(client_id).await {
+        Ok(conversation) => {
+            info!(
+                "Created conversation {} for client {}",
+                conversation.id, client_id
+            );
+            conversation.id
+        }
+        Err(e) => {
+            error!("Failed to create conversation: {}", e);
+            return;
+        }
+    };
+
     // Create a channel to receive responses from the pipeline
     let (response_tx, mut response_rx) = mpsc::unbounded_channel();
+
+    // Create a channel to notify about user messages that need to be saved
+    let (user_msg_tx, mut user_msg_rx) = mpsc::unbounded_channel::<String>();
 
     // Create a channel for sending messages to the WebSocket
     let (ws_tx, mut ws_rx) = mpsc::unbounded_channel::<WsMessage>();
@@ -42,12 +65,50 @@ pub async fn handle_websocket(socket: WebSocket, state: WsState) {
         }
     });
 
+    // Spawn a task to save user messages
+    let conversation_repo_clone_for_user = state.conversation_repo.clone();
+    tokio::spawn(async move {
+        while let Some(transcription) = user_msg_rx.recv().await {
+            let create_message = CreateMessage {
+                conversation_id,
+                message_type: MessageType::User,
+                content: transcription,
+                audio_duration_ms: None,
+            };
+
+            if let Err(e) = conversation_repo_clone_for_user.add_message(create_message).await {
+                error!("Failed to save user message to database: {}", e);
+            }
+        }
+    });
+
     // Spawn a task to handle pipeline responses
     let ws_tx_clone = ws_tx.clone();
+    let conversation_repo_clone = state.conversation_repo.clone();
+    let user_msg_tx_clone = user_msg_tx.clone();
     tokio::spawn(async move {
         while let Some(response) = response_rx.recv().await {
             match response {
+                PipelineResponse::Transcription {
+                    request_id: _,
+                    transcription,
+                } => {
+                    // Send transcription to be saved as user message
+                    let _ = user_msg_tx_clone.send(transcription);
+                }
                 PipelineResponse::Text(text_response) => {
+                    // Save AI response to database
+                    let create_message = CreateMessage {
+                        conversation_id,
+                        message_type: MessageType::AiTutor,
+                        content: text_response.reply.clone(),
+                        audio_duration_ms: None,
+                    };
+
+                    if let Err(e) = conversation_repo_clone.add_message(create_message).await {
+                        error!("Failed to save AI message to database: {}", e);
+                    }
+
                     if let Ok(json) = serde_json::to_string(&ServerMessage::Text(text_response)) {
                         let _ = ws_tx_clone.send(WsMessage::Text(json));
                     }
@@ -178,5 +239,12 @@ pub async fn handle_websocket(socket: WebSocket, state: WsState) {
     }
 
     info!("WebSocket client disconnected: {}", client_id);
+
+    // End the conversation
+    if let Err(e) = state.conversation_repo.end_conversation(conversation_id).await {
+        error!("Failed to end conversation {}: {}", conversation_id, e);
+    } else {
+        info!("Conversation {} ended", conversation_id);
+    }
 }
 
