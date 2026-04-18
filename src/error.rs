@@ -5,6 +5,9 @@ pub enum AssistantError {
     #[error("Bedrock API error: {0}")]
     Bedrock(String),
 
+    #[error("OpenAI API error: {0}")]
+    OpenAi(String),
+
     #[error("Failed to serialize request: {0}")]
     Serialization(#[from] serde_json::Error),
 

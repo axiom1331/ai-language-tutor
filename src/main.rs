@@ -13,7 +13,7 @@ use db::pool::{create_pool, run_migrations};
 use db::ConversationRepository;
 use dotenv::dotenv;
 use pipeline::Pipeline;
-use replygen::BedrockReplyGenerator;
+use replygen::{BedrockReplyGenerator, OpenAiReplyGenerator};
 use stt::{CartesiaConfig as SttCartesiaConfig, CartesiaSttProvider};
 use std::env;
 use std::sync::Arc;
@@ -48,19 +48,6 @@ async fn main() {
     // Create conversation repository
     let conversation_repo = Arc::new(ConversationRepository::new(db_pool));
 
-    // Initialize AWS Bedrock client
-    let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set");
-    info!("Initializing AWS config for region: {}", aws_region);
-    let config = aws_config::defaults(BehaviorVersion::latest())
-        .region(Region::new(aws_region))
-        .load()
-        .await;
-    let bedrock_client = aws_sdk_bedrockruntime::Client::new(&config);
-
-    // Create Bedrock reply generator
-    info!("Creating Bedrock reply generator with model: eu.amazon.nova-lite-v1:0");
-    let reply_generator = BedrockReplyGenerator::new(bedrock_client, "eu.amazon.nova-lite-v1:0");
-
     // Create Cartesia STT provider
     info!("Setting up Cartesia STT provider");
     let stt_config = SttCartesiaConfig {
@@ -82,7 +69,7 @@ async fn main() {
             .and_then(|s| s.parse().ok())
             .unwrap_or(0.5),
     };
-    let stt_provider = CartesiaSttProvider::new(stt_config);
+    let stt_provider = Arc::new(CartesiaSttProvider::new(stt_config));
 
     // Create Cartesia TTS provider
     info!("Setting up Cartesia TTS provider");
@@ -102,20 +89,52 @@ async fn main() {
     };
     let tts_provider = Arc::new(CartesiaTtsProvider::new(tts_config));
 
-    // Wrap providers in Arc for sharing across threads
-    let stt_provider = Arc::new(stt_provider);
-    let reply_generator = Arc::new(reply_generator);
+    // Select LLM provider via LLM_PROVIDER env var ("openai" or "bedrock", defaults to "bedrock")
+    let llm_provider = env::var("LLM_PROVIDER").unwrap_or_else(|_| "bedrock".to_string());
+    info!("LLM provider: {}", llm_provider);
 
-    // Create and start the processing pipeline with worker threads
-    info!("Initializing parallel processing pipeline (STT -> Reply -> TTS)");
-    let pipeline = Pipeline::new(stt_provider, reply_generator, tts_provider);
-
-    // Create the WebSocket application
-    info!("Creating WebSocket server");
-    let app = create_app::<CartesiaSttProvider, BedrockReplyGenerator, CartesiaTtsProvider>(
-        pipeline,
-        conversation_repo,
-    );
+    let app = match llm_provider.as_str() {
+        "openai" => {
+            let openai_api_key = env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY not set");
+            let reply_model = env::var("OPENAI_REPLY_MODEL")
+                .unwrap_or_else(|_| "gpt-5.4-mini".to_string());
+            let classifier_model = env::var("OPENAI_CLASSIFIER_MODEL")
+                .unwrap_or_else(|_| "gpt-5.4-nano".to_string());
+            info!(
+                "Creating OpenAI reply generator (reply: {}, classifier: {})",
+                reply_model, classifier_model
+            );
+            let reply_generator = Arc::new(OpenAiReplyGenerator::new(
+                openai_api_key,
+                reply_model,
+                classifier_model,
+            ));
+            let pipeline = Pipeline::new(stt_provider, reply_generator, tts_provider);
+            info!("Creating WebSocket server");
+            create_app::<CartesiaSttProvider, OpenAiReplyGenerator, CartesiaTtsProvider>(
+                pipeline,
+                conversation_repo,
+            )
+        }
+        _ => {
+            let aws_region = env::var("AWS_REGION").expect("AWS_REGION not set");
+            info!("Initializing AWS config for region: {}", aws_region);
+            let config = aws_config::defaults(BehaviorVersion::latest())
+                .region(Region::new(aws_region))
+                .load()
+                .await;
+            let bedrock_client = aws_sdk_bedrockruntime::Client::new(&config);
+            info!("Creating Bedrock reply generator with model: eu.amazon.nova-lite-v1:0");
+            let reply_generator =
+                Arc::new(BedrockReplyGenerator::new(bedrock_client, "eu.amazon.nova-lite-v1:0"));
+            let pipeline = Pipeline::new(stt_provider, reply_generator, tts_provider);
+            info!("Creating WebSocket server");
+            create_app::<CartesiaSttProvider, BedrockReplyGenerator, CartesiaTtsProvider>(
+                pipeline,
+                conversation_repo,
+            )
+        }
+    };
 
     // Start the server
     let addr = env::var("LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:8080".to_string());
